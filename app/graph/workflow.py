@@ -17,8 +17,10 @@ def route_after_web_search(state) -> str:
 
 
 def route_after_grounding(state) -> str:
-    if state["grounded"] or state["gen_attempts"] >= config.MAX_GEN_ATTEMPTS:
+    if state["grounded"]:
         return "end"
+    if state["gen_attempts"] >= config.MAX_GEN_ATTEMPTS:
+        return "fallback"
     return "generate"
 
 
@@ -47,7 +49,7 @@ def build_graph():
                             {"generate": "generate", "fallback": "fallback"})
     g.add_edge("generate", "check_grounding")
     g.add_conditional_edges("check_grounding", route_after_grounding,
-                            {"end": END, "generate": "generate"})
+                            {"end": END, "generate": "generate", "fallback": "fallback"})
     g.add_edge("fallback", END)
     return g.compile()
 

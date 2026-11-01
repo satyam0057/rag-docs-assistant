@@ -39,3 +39,6 @@ print(f"\n{'question':50}{'expected':10}{'got':8}{'retries':8}{'grounded':9}resu
 for r in rows:
     print(f"{r[0]:50}{r[1]:10}{r[2]:8}{r[3]!s:8}{r[4]!s:9}{r[5]}")
 print(f"\n{passed}/{len(CASES)} passed")
+
+if passed != len(CASES):
+    sys.exit(1)

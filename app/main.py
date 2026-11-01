@@ -65,9 +65,14 @@ async def ingest(file: Optional[UploadFile] = File(None), url: Optional[str] = F
             text = (await file.read()).decode("utf-8")
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="File must be UTF-8 text")
-        return {"source": file.filename, "chunks": ingest_text(text, source=file.filename)}
+        try:
+            return {"source": file.filename, "chunks": ingest_text(text, source=file.filename)}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     try:
         return {"source": url, "chunks": ingest_url(url)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except requests.RequestException as e:
         raise HTTPException(status_code=400, detail=f"Could not fetch URL: {e}")
 

@@ -46,7 +46,33 @@ def test_query_with_mocked_graph(monkeypatch):
     assert r.json()["retries"] == 1
 
 
-def test_documents_endpoint():
+def test_documents_endpoint(monkeypatch):
+    class Store:
+        def get(self, **kwargs):
+            return {"metadatas": [{"source": "doc.md"}]}
+    monkeypatch.setattr(main, "get_vectorstore", lambda: Store())
     r = client.get("/documents")
     assert r.status_code == 200
     assert "documents" in r.json()
+
+
+def test_empty_upload_rejected():
+    r = client.post("/ingest", files={"file": ("doc.md", b"  ", "text/plain")})
+    assert r.status_code == 400
+
+
+def test_grounding_routes_to_fallback_after_limit():
+    from app.graph.workflow import route_after_grounding
+    from app import config
+    assert route_after_grounding({"grounded": False, "gen_attempts": 1}) == "generate"
+    assert route_after_grounding({"grounded": False, "gen_attempts": config.MAX_GEN_ATTEMPTS}) == "fallback"
+    assert route_after_grounding({"grounded": True, "gen_attempts": 1}) == "end"
+
+
+def test_grading_retry_is_bounded(monkeypatch):
+    from app.graph.workflow import route_after_grading
+    from app import config
+    monkeypatch.setattr(config, "TAVILY_API_KEY", None)
+    assert route_after_grading({"documents": [object()], "retries": 0}) == "generate"
+    assert route_after_grading({"documents": [], "retries": 0}) == "rewrite_query"
+    assert route_after_grading({"documents": [], "retries": config.MAX_RETRIES}) == "fallback"

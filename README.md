@@ -23,7 +23,8 @@ graph TD
     web_search -->|no results| fallback
     generate --> check_grounding
     check_grounding -->|not grounded, attempts left| generate
-    check_grounding -->|grounded or attempts used up| E([END])
+    check_grounding -->|grounded| E([END])
+    check_grounding -->|attempts used up| fallback
     fallback --> E
 ```
 | Node | Responsibility |
@@ -34,7 +35,7 @@ graph TD
 | `rewrite_query` | If nothing relevant: new query, `retries += 1`, back to `retrieve` |
 | `web_search` | (optional, needs `TAVILY_API_KEY`) Tavily fallback after retries are exhausted |
 | `generate` | Answer grounded in relevant chunks with `[n]` citations |
-| `check_grounding` | Verifies answer is supported by context; regenerates once if not |
+| `check_grounding` | Verifies answer is supported by context; regenerates once, then falls back if still unsupported |
 | `fallback` | Returns an honest "I don't know" |
 
 Routing: relevant docs -> generate. None -> rewrite and retry (max 2). Still none -> web search (if key) or "I don't know".
@@ -167,13 +168,13 @@ Other endpoints: `POST /ingest` (file upload or `url` form field), `GET /documen
 English docs, Markdown/text only, single collection, UTF-8 files, single-process deployment.
 
 ## Known limitations
-- Session memory and feedback storage are not persistent across restarts / not multi-worker safe (feedback is JSONL).
+- Session memory is not persistent across restarts or shared across workers. Feedback is persisted in a local JSONL file and is not designed for multi-worker use.
 - Query-type classification is recorded but only lightly used downstream.
 - Dense-only retrieval; exact identifiers (e.g. specific parameter names) can be missed.
 - Grounding check is LLM-based and can itself be wrong.
 - Sync endpoints; no auth or rate limiting.
 - My first eval set had a question about running the app with uvicorn. The corpus only mentions uvicorn in sample log output, so the system correctly answered "I don't know". I corrected the test, not the system.
-- The LLM-based grounding check can be stricter than an answer deserves (one answer was flagged grounded=false in an earlier run), so the flag is returned to the client and not hidden.
+- The LLM-based grounding check can be stricter than an answer deserves; after repeated failures the system returns a fallback with grounded=false.
 - Query analysis falls back to the raw question if the structured-output call fails (this happened when the model refused an off-topic question).
 - The retriever searches with both the rewritten and the original question, then merges and dedupes, because LLM rewrites sometimes drifted from the user's intent.
 - The Groq model is configurable through GROQ_MODEL, because my first choice was removed from Groq's catalog.
@@ -183,22 +184,6 @@ Hybrid search (BM25 + vectors) · cross-encoder reranker · parallel/async gradi
 RAGAS evaluation · Docker · persistent session/feedback DB · use `query_type` to tune retrieval (e.g. more chunks for
 conceptual questions) · auth and rate limiting.
 
-## Evaluation results
+## Evaluation
 
-Run with `python scripts/evaluate.py` (10 questions: 6 in-corpus, 3 off-topic, 1 vague).
-
-```
-question                                          expected  got     retries grounded result
-How do I declare a path parameter in FastAPI?     answer    answer  0       True     PASS
-How do I define optional query parameters?        answer    answer  0       True     PASS
-How do I receive a JSON request body with Pydant  answer    answer  0       True     PASS
-What is a dependency in FastAPI?                  answer    answer  0       True     PASS
-How do I run a FastAPI app?                       answer    answer  0       True     PASS
-How do I validate the type of a path parameter?   answer    answer  0       True     PASS
-How do I bake sourdough bread?                    idk       idk     2       True     PASS
-Who won the 2018 football world cup?              idk       idk     2       True     PASS
-What is the capital of France?                    idk       idk     2       True     PASS
-how do i send stuff to the api                    answer    answer  0       True     PASS
-
-10/10 passed
-```
+Run `python scripts/evaluate.py` after indexing the corpus and configuring a Groq API key. It checks ten example questions, but its keyword-based checks are only a smoke test; review answer quality and citations manually as well. Results depend on the model and the current corpus.

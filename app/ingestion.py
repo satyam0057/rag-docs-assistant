@@ -19,11 +19,15 @@ _rec_split = RecursiveCharacterTextSplitter(
 
 
 def ingest_text(text: str, source: str) -> int:
+    if not text.strip():
+        raise ValueError("Document is empty")
     sections = _md_split.split_text(text)
     chunks = _rec_split.split_documents(sections)
     chunks = [c for c in chunks if c.page_content.strip()]
     for i, c in enumerate(chunks):
         c.metadata.update({"source": source, "chunk_id": f"{source}-{i}"})
+    if not chunks:
+        raise ValueError("Document contains no indexable text")
     delete_source(source)  # dedupe
     if chunks:
         get_vectorstore().add_documents(chunks)

@@ -1,4 +1,5 @@
 from typing import List, Literal
+import re
 import requests
 from pydantic import BaseModel, Field
 from langchain_core.documents import Document
@@ -8,7 +9,8 @@ from langchain_groq import ChatGroq
 from app import config
 from app.vectorstore import get_vectorstore
 
-llm = ChatGroq(model=config.GROQ_MODEL, temperature=0, max_retries=3)
+def get_llm():
+    return ChatGroq(model=config.GROQ_MODEL, temperature=0, max_retries=3)
 
 IDK_MESSAGE = (
     "I don't know based on the indexed documentation. "
@@ -32,6 +34,10 @@ class Grounded(BaseModel):
     grounded: bool = Field(description="True only if every claim is supported by the context")
 
 
+def normalize_citations(answer: str) -> str:
+    return re.sub(r"【(\d+)】", r"[\1]", answer)
+
+
 # ---------- nodes ----------
 def analyze_query(state):
     chain = ChatPromptTemplate.from_messages([
@@ -46,7 +52,7 @@ def analyze_query(state):
          "documentation: in that case just return the question lightly cleaned up. "
          "Never refuse or answer the question yourself."),
         ("human", "{q}"),
-    ]) | llm.with_structured_output(QueryAnalysis)
+    ]) | get_llm().with_structured_output(QueryAnalysis)
     try:
         r = chain.invoke({"q": state["question"]})
         rewritten, qtype = r.rewritten_query, r.query_type
@@ -62,7 +68,7 @@ def retrieve(state):
     seen, docs = set(), []
     for q in (state["rewritten_query"], state["question"]):
         for d in store.similarity_search(q, k=config.TOP_K):
-            cid = d.metadata.get("chunk_id")
+            cid = d.metadata.get("chunk_id") or (d.metadata.get("source"), d.page_content)
             if cid not in seen:
                 seen.add(cid)
                 docs.append(d)
@@ -80,7 +86,7 @@ def grade_documents(state):
          "information useful for answering the question. Be strict: a chunk that only shares "
          "keywords but does not help answer is irrelevant. Return an empty list if none help."),
         ("human", "Question: {q}\n\nChunks:\n{chunks}"),
-    ]) | llm.with_structured_output(BatchGrade)
+    ]) | get_llm().with_structured_output(BatchGrade)
     result = chain.invoke({"q": state["question"], "chunks": numbered})
     keep = sorted({i for i in result.relevant_indices if 0 <= i < len(docs)})
     return {"documents": [docs[i] for i in keep]}
@@ -92,7 +98,7 @@ def rewrite_query(state):
          "The previous search returned nothing relevant. Write a different search query "
          "(different keywords, broader or more specific). Return ONLY the query text."),
         ("human", "Original question: {q}\nPrevious query: {p}"),
-    ]) | llm
+    ]) | get_llm()
     new = chain.invoke({"q": state["question"], "p": state["rewritten_query"]}).content.strip()
     return {"rewritten_query": new, "retries": state["retries"] + 1}
 
@@ -125,8 +131,10 @@ def generate(state):
          "If the context is insufficient, say so. Include code examples when the context has them. "
          "Do not add facts that are not in the context."),
         ("human", "Context:\n{ctx}\n\nQuestion: {q}"),
-    ]) | llm
+    ]) | get_llm()
     answer = chain.invoke({"ctx": ctx, "q": state["question"]}).content
+    # Models may use decorative citation brackets despite the prompt.
+    answer = normalize_citations(answer)
     return {"generation": answer, "gen_attempts": state.get("gen_attempts", 0) + 1}
 
 
@@ -140,13 +148,13 @@ def check_grounding(state):
          "are fine. Set grounded=false ONLY if the answer states substantive facts that are "
          "clearly absent from the context."),
         ("human", "Context:\n{ctx}\n\nAnswer:\n{a}"),
-    ]) | llm.with_structured_output(Grounded)
+    ]) | get_llm().with_structured_output(Grounded)
     r = chain.invoke({"ctx": ctx, "a": state["generation"]})
     return {"grounded": r.grounded}
 
 
 def fallback(state):
-    return {"generation": IDK_MESSAGE, "documents": [], "grounded": True}
+    return {"generation": IDK_MESSAGE, "documents": [], "grounded": state.get("grounded", True)}
 
 
 # ---------- memory helper (used by the API, outside the graph) ----------
@@ -160,5 +168,5 @@ def condense_question(question: str, history: List[dict]) -> str:
          "Rewrite the follow-up question as a standalone question using the chat history. "
          "If it is already standalone, return it unchanged. Return ONLY the question."),
         ("human", "History:\n{h}\n\nFollow-up: {q}"),
-    ]) | llm
+    ]) | get_llm()
     return chain.invoke({"h": hist, "q": question}).content.strip()
